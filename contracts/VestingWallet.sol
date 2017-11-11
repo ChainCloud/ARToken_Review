@@ -10,6 +10,7 @@ import "./ERC20.sol";
 contract VestingWallet {
     event TokensReleased(uint _tokensReleased, uint _tokensRemaining, uint _nextPeriod);
 
+    ////// [low] Uninitialized
     address public foundersWallet;
     address public crowdsaleContract;
     ERC20 public tokenContract;
@@ -32,6 +33,9 @@ contract VestingWallet {
 
     // PRIVILEGED FUNCTIONS
     // ====================
+    //
+    ////// [critical] Founders can call that BEFORE launchVesting()
+    ////// which will ruin 'periodsPassed' var.
     function releaseBatch() external onlyFounders {
         require( now > nextPeriod );
         require( periodsPassed < totalPeriods );
@@ -41,16 +45,20 @@ contract VestingWallet {
             nextPeriod      += cliffPeriod;
             tokensToRelease += tokensPerBatch;
         } while (now > nextPeriod);
+
         // If vesting has finished, just transfer the remaining tokens.
         if (periodsPassed >= totalPeriods) {
             tokensToRelease = tokenContract.balanceOf(this);
             nextPeriod = 0x0;
         }
+
+        ////// [critical] Consider using Safe Math 
         tokensRemaining -= tokensToRelease;
         tokenContract.transfer(foundersWallet, tokensToRelease);
         TokensReleased(tokensToRelease, tokensRemaining, nextPeriod);
     }
 
+    ////// [low] This can be called again
     function launchVesting() onlyCrowdsale {
         tokensRemaining = tokenContract.balanceOf(this);
         nextPeriod      = now + cliffPeriod;

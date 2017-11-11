@@ -1,3 +1,4 @@
+////// [low] Consider upgrading to newer version
 pragma solidity ^0.4.11;
 
 /**
@@ -5,6 +6,7 @@ pragma solidity ^0.4.11;
  * @dev see https://github.com/ethereum/EIPs/issues/20
  */
 contract ERC20 {
+  ////// [low] Non-initialized
   uint public totalSupply;
 
   function balanceOf(address _owner) constant returns (uint);

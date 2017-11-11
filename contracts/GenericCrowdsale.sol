@@ -2,7 +2,12 @@
 pragma solidity ^0.4.15;
 
 contract GenericCrowdsale {
+    ////// [low] Uninitialized
+    ////// [low] Add 'changeIcoBackend' method 
     address public icoBackend;
+
+    ////// [low] Uninitialized
+    ////// [low] Add 'changeManager' method 
     address public icoManager;
     bool paused = false;
 
