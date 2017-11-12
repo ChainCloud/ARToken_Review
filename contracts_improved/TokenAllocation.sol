@@ -4,13 +4,11 @@ import './ARToken.sol';
 import './GenericCrowdsale.sol';
 import './VestingWallet.sol';
 
-   /**
-    * @dev Prepaid token allocation for a capped crowdsale with bonus structure sliding on sales
-    *      Written with OpenZeppelin sources as a rough reference.     
-    */
+/**
+* @dev Prepaid token allocation for a capped crowdsale with bonus structure sliding on sales
+*      Written with OpenZeppelin sources as a rough reference.     
+*/
 
-////// [critical] Consider using Safe Math 
-////// [low] no default function() payable{ revert(); }
 contract TokenAllocation is GenericCrowdsale {
     // Events
     event TokensAllocated(address _beneficiary, uint _contribution, uint _tokensIssued);
@@ -24,17 +22,10 @@ contract TokenAllocation is GenericCrowdsale {
 
     ARToken public tokenContract;
     
-    ////// [low] Uninitialized
-    address public foundersWallet; // A wallet permitted to request tokens from the time vaults.
-    ////// [low] Uninitialized
-    address public partnersWallet; // A wallet that distributes the tokens to early contributors.
-    ////// [low] Uninitialized
-    ////// [medium] Redeclaration (see 'GenericCrowdsale') 
-    address public icoManager;
-    ////// [low] Uninitialized
-    ////// [medium] Redeclaration (see 'GenericCrowdsale') 
-    address public icoBackend;
-    
+    address public foundersWallet = 0x0; // A wallet permitted to request tokens from the time vaults.
+
+    address public partnersWallet = 0x0; // A wallet that distributes the tokens to early contributors.
+
     // Crowdsale progress
     uint constant public hardCap     = 5 * 1e7 * 1e2; // 50 000 000 dollars * 100 cents per dollar
     uint constant public phaseOneCap = 3 * 1e7 * 1e2; // 30 000 000 dollars * 100 cents per dollar
@@ -51,6 +42,7 @@ contract TokenAllocation is GenericCrowdsale {
 
     VestingWallet public vestingWallet;
 
+    ///// TODO: ???
     ///// [style] 'Paused' phase, 'paused' state variable in GenericCrowdsale...
     ///// Because of that we have 'onlyUnpaused' and 'onlyValidPhase' modifiers...
     ///// Better to rename Paused phase... 
@@ -84,6 +76,8 @@ contract TokenAllocation is GenericCrowdsale {
         
         tokenContract = new ARToken(address(this));
 
+        vestingWallet = new VestingWallet(_foundersWallet, address(tokenContract));
+
         icoManager       = _icoManager;
         icoBackend       = _icoBackend;
         foundersWallet   = _foundersWallet;
@@ -98,65 +92,41 @@ contract TokenAllocation is GenericCrowdsale {
      * @param _beneficiary Receiver of the tokens.
      * @param _contribution Size of the contribution (in USD cents).
      */ 
-    ////// [critical] Consider using Safe Math 
     function issueTokens(address _beneficiary, uint _contribution) external onlyBackend onlyValidPhase onlyUnpaused {
-        require( totalCentsGathered + _contribution <= hardCap );
+        require( (totalCentsGathered + _contribution) <= hardCap );
 
         // this method works only in PhaseOne and PhaseTwo
         if (crowdsalePhase == CrowdsalePhase.PhaseOne) {
             require( totalCentsGathered + _contribution <= phaseOneCap );
         }
 
-        uint centsLeftInPhase;
         uint remainingContribution = _contribution;
-        uint contributionPart;
-        uint tokensToMint;
-        uint bonus;
 
-        totalCentsGathered += _contribution;
-
-        ////// [recommendation] Remove bonus split-up (do-while loop) for clarity
-        ////// Many ICOs do that. That will allow people to get more bonus (if buying "on the edge")
-        ////// but will simplify logics.
+        totalCentsGathered = safeAdd( totalCentsGathered, _contribution );
 
         // Check if the contribution fills the current bonus phase. If so, break it up in parts,
         // mint tokens for each part separately, assign bonuses, trigger events. For transparency.
         do {
             // 1 - calculate contribution part for current bonus stage
-            if (bonusPhase != BonusPhase.None) {
-                // BonusPhase.TenPercent or BonusPhase.FivePercent
-                
-                ////// [style] Extract this code to separate method
-                uint one = ((totalCentsGathered - centsInPhaseOne) / bonusTierSize) + 1);
-                centsLeftInPhase = (one * bonusTierSize) - (totalCentsGathered - centsInPhaseOne);
-                contributionPart = min(centsLeftInPhase, remainingContribution);
-            } else { 
-                // BonusPhase.None (last one)
-                contributionPart = remainingContribution;
-            }
+            uint contributionPart = calculateContributionPart(totalCentsGathered, remainingContribution);
+            uint centsLeftInPhase = calculateCentsLeftInPhase(totalCentsGathered);
 
             // 2 - mint tokens
-            tokensToMint = tokenRate * contributionPart;
-            // will throw if tokensToMint is zero
+            uint tokensToMint = tokenRate * contributionPart;
             tokenContract.mint(_beneficiary, tokensToMint);
+            totalTokenSupply = safeAdd(totalTokenSupply, tokensToMint);
+            updateTokensDuringPhase(tokensToMint);
             TokensAllocated(_beneficiary, contributionPart, tokensToMint);
 
             // 3 - mint bonus
-            bonus = calculateBonus(contributionPart);
-            if (bonus>0) tokenContract.mint(_beneficiary, bonus);
-            ////// [low] If bonus is ZERO -> still send an event? 
-            BonusIssued(_beneficiary, bonus);
-            if ((bonusPhase != BonusPhase.None) && (centsLeftInPhase == contributionPart)) {
-                advanceBonusPhase();
-            }
+            uint bonus = calculateBonus(contributionPart);
+            mintBonus(_beneficiary, bonus, centsLeftInPhase, contributionPart);
+            totalTokenSupply = safeAdd(totalTokenSupply, bonus);
+            updateTokensDuringPhase(bonus);
+            BonusIssued(_beneficiary, bonus);          // even if bonus is ZERO
 
-            // 4 - update token supply
-            ////// [critical] Consider using Safe Math 
-            remainingContribution -= contributionPart;
-            totalTokenSupply += (tokensToMint + bonus);
-            if (crowdsalePhase == CrowdsalePhase.PhaseOne) {
-                tokensDuringPhaseOne += (tokensToMint + bonus);
-            }
+            // 4 - continue?
+            remainingContribution = safeSub(remainingContribution,contributionPart);
         } while (remainingContribution > 0);
     }
 
@@ -167,9 +137,6 @@ contract TokenAllocation is GenericCrowdsale {
      * @param _contribution The equivalent (in USD cents) of the contribution received off-chain.
      * @param _bonus Custom bonus size in percents, will be issued as one batch after the contribution. 
      */
-    ////// [recommendation] Use some 'onlyOffChain' account instead of 'backend'
-    ////// [style] A lot of code is identical to the method above. Please refactor
-    ////// [medium] This can be called even if (crowdsalePhase==CrowdsalePhase.Paused)?
     function issueTokensWithCustomBonus(address _beneficiary, uint _contribution, uint _bonus) 
                                             onlyBackend onlyUnpaused external {
         require( totalCentsGathered + _contribution <= hardCap );
@@ -177,87 +144,126 @@ contract TokenAllocation is GenericCrowdsale {
             require( totalCentsGathered + _contribution <= phaseOneCap );
         }
 
-        uint centsLeftInPhase;
         uint remainingContribution = _contribution;
-        uint contributionPart;
-        uint bonus;
 
-        totalCentsGathered += _contribution;
+        totalCentsGathered = safeAdd( totalCentsGathered, _contribution );
 
-        // Advance bonus phases as needed with contribution filling the bonus tiers.
+        // 0 - mint bonus first
+        uint bonus = (_contribution * _bonus) / 100;
+        mintBonus(_beneficiary, bonus, centsLeftInPhase, contributionPart);
+        totalTokenSupply = safeAdd(totalTokenSupply, bonus);
+        updateTokensDuringPhase(bonus);
+        BonusIssued(_beneficiary, bonus);          // even if bonus is ZERO
+
+        // Check if the contribution fills the current bonus phase. If so, break it up in parts,
+        // mint tokens for each part separately, assign bonuses, trigger events. For transparency.
         do {
-            if (bonusPhase != BonusPhase.None) {
-                centsLeftInPhase = ((totalCentsGathered - centsInPhaseOne) / bonusTierSize + 1) * bonusTierSize - 
-                                                                            (totalCentsGathered - centsInPhaseOne);
-                contributionPart = min(centsLeftInPhase, remainingContribution);
-            } else contributionPart = remainingContribution;
+            // 1 - calculate contribution part for current bonus stage
+            uint contributionPart = calculateContributionPart(totalCentsGathered, remainingContribution);
+            uint centsLeftInPhase = calculateCentsLeftInPhase(totalCentsGathered);
 
-            if ((bonusPhase != BonusPhase.None) && (centsLeftInPhase == contributionPart))
-                advanceBonusPhase();
-            remainingContribution -= contributionPart;
+            // 2 - mint tokens
+            uint tokensToMint = tokenRate * contributionPart;
+            tokenContract.mint(_beneficiary, tokensToMint);
+            totalTokenSupply = safeAdd(totalTokenSupply, tokensToMint);
+            updateTokensDuringPhase(tokensToMint);
+            TokensAllocated(_beneficiary, contributionPart, tokensToMint);
+
+            // 4 - continue?
+            remainingContribution = safeSub(remainingContribution,contributionPart);
         } while (remainingContribution > 0);
+    }
 
-        // 2 - mint tokens
-        uint tokensToMint = _contribution * tokenRate;
-        tokenContract.mint(_beneficiary, tokensToMint);
-        TokensAllocated(_beneficiary, _contribution, tokensToMint);
+    // ====================
+    function calculateCentsLeftInPhase(uint _totalCentsGathered) internal returns(uint){
+       if (bonusPhase != BonusPhase.None) {
+           uint one = ((_totalCentsGathered - centsInPhaseOne) / bonusTierSize) + 1);
+           uint centsLeftInPhase = (one * bonusTierSize) - (_totalCentsGathered - centsInPhaseOne);
 
-        // 3 - mint bonus
-        bonus = _contribution * _bonus / 100;
-        ////// [low] If bonus is ZERO - will throw. Is that ok?
-        tokenContract.mint(_beneficiary, bonus);
-        BonusIssued(_beneficiary, bonus);
+           return centsLeftInPhase;
+       } else { 
+           // this return should be never used!
+           return 0;
+       }
+    }
 
-        // 4 - update token supply
-        totalTokenSupply += (tokensToMint + bonus);
-        if (crowdsalePhase == CrowdsalePhase.PhaseOne) {
-            tokensDuringPhaseOne += (tokensToMint + bonus);
-        }
+    function calculateContributionPart(uint _totalCentsGathered, uint _remainingContribution) internal returns(uint){
+       if (bonusPhase != BonusPhase.None) {
+           uint one = ((_totalCentsGathered - centsInPhaseOne) / bonusTierSize) + 1);
+           uint centsLeftInPhase = (one * bonusTierSize) - (_totalCentsGathered - centsInPhaseOne);
+
+           return min(centsLeftInPhase, _remainingContribution);
+       } else { 
+           return remainingContribution;
+       }
+    }
+
+    function mintBonus(address _beneficiary, uint _bonus, uint _centsLeftInPhase, uint _contributionPart) internal {
+       // 1 - issue
+       if (bonus>0) {
+          tokenContract.mint(_beneficiary, _bonus);
+       }
+
+       // 2 - advance
+       if ((bonusPhase != BonusPhase.None) && (_centsLeftInPhase == _contributionPart)) {
+           advanceBonusPhase();
+       }
+    }
+
+    function updateTokensDuringPhase(uint _tokens) internal {
+       if (crowdsalePhase == CrowdsalePhase.PhaseOne) {
+           tokensDuringPhaseOne = safeAdd(tokensDuringPhaseOne, _tokens);
+       }
     }
 
     /**
      * @dev Issue tokens for founders and partners, end the current phase.
      */
-    ////// [style] Refactor -> split into 2 methods - one for each stage 
     function rewardFoundersAndPartners() external onlyBackend onlyValidPhase onlyUnpaused {
-        uint tokensDuringThisPhase;
         if (crowdsalePhase == CrowdsalePhase.PhaseOne) {
-            tokensDuringThisPhase = totalTokenSupply;
+            rewardFoundersAndPartnersPhaseOne();
         } else {
-            tokensDuringThisPhase = totalTokenSupply - tokensDuringPhaseOne;
+            rewardFoundersAndPartnersPhaseTwo();
         }
+    }
 
-        // Total tokens sold is 70% of the overall supply, founders' share is 18%, early contributors' is 12%
-        // So to obtain those from tokens sold, multiply them by 0.18 / 0.7 and 0.12 / 0.7 respectively.
-        uint tokensForFounders = tokensDuringThisPhase * 257 / 1000; // 0.257 of 0.7 is 0.18 of 1
-        uint tokensForPartners = tokensDuringThisPhase * 171 / 1000; // 0.171 of 0.7 is 0.12 of 1
+    function rewardFoundersAndPartnersPhaseOne() internal {
+         uint tokensDuringThisPhase = totalTokenSupply;
 
-        tokenContract.mint(partnersWallet, tokensForPartners);
+         // Total tokens sold is 70% of the overall supply, founders' share is 18%, early contributors' is 12%
+         // So to obtain those from tokens sold, multiply them by 0.18 / 0.7 and 0.12 / 0.7 respectively.
+         uint tokensForFounders = tokensDuringThisPhase * 257 / 1000; // 0.257 of 0.7 is 0.18 of 1
+         uint tokensForPartners = tokensDuringThisPhase * 171 / 1000; // 0.171 of 0.7 is 0.12 of 1
 
-        if (crowdsalePhase == CrowdsalePhase.PhaseOne) {
-            ////// [style] Move to constructor
-            vestingWallet = new VestingWallet(foundersWallet, address(tokenContract));
-            ////// [style] Wrap vestingWallet in address() ?
-            tokenContract.mint(vestingWallet, tokensForFounders);
-            FoundersAndPartnersTokensIssued(vestingWallet, tokensForFounders, partnersWallet, tokensForPartners);
-        } else if (crowdsalePhase == CrowdsalePhase.PhaseTwo) {
-            ////// [style] Wrap vestingWallet in address() ?
-            tokenContract.mint(vestingWallet, tokensForFounders);
-            vestingWallet.launchVesting();
-            FoundersAndPartnersTokensIssued(vestingWallet, tokensForFounders, partnersWallet, tokensForPartners);
-        }
-        
-      // Store the total sum collected during phase one for calculations in phase two. Enable token transfer.   
-      if (crowdsalePhase == CrowdsalePhase.PhaseOne) {
+         tokenContract.mint(partnersWallet, tokensForPartners);
+         tokenContract.mint(vestingWallet, tokensForFounders);
+         FoundersAndPartnersTokensIssued(vestingWallet, tokensForFounders, partnersWallet, tokensForPartners);
+
+         // Store the total sum collected during phase one for calculations in phase two. Enable token transfer.   
          centsInPhaseOne = totalCentsGathered;
-         tokenContract.unfreeze();
-         crowdsalePhase = CrowdsalePhase.Paused;
-      } else {
-         crowdsalePhase = CrowdsalePhase.Finished;
-      }
 
-      tokenContract.endMinting();
-   }
+         crowdsalePhase = CrowdsalePhase.Paused;
+         tokenContract.endMinting();
+         tokenContract.unfreeze();
+    }
+
+    function rewardFoundersAndPartnersPhaseTwo() internal {
+         uint tokensDuringThisPhase = totalTokenSupply - tokensDuringPhaseOne;
+
+         // Total tokens sold is 70% of the overall supply, founders' share is 18%, early contributors' is 12%
+         // So to obtain those from tokens sold, multiply them by 0.18 / 0.7 and 0.12 / 0.7 respectively.
+         uint tokensForFounders = tokensDuringThisPhase * 257 / 1000; // 0.257 of 0.7 is 0.18 of 1
+         uint tokensForPartners = tokensDuringThisPhase * 171 / 1000; // 0.171 of 0.7 is 0.12 of 1
+
+         tokenContract.mint(partnersWallet, tokensForPartners);
+         tokenContract.mint(vestingWallet, tokensForFounders);
+         FoundersAndPartnersTokensIssued(vestingWallet, tokensForFounders, partnersWallet, tokensForPartners);
+
+         vestingWallet.launchVesting();
+
+         crowdsalePhase = CrowdsalePhase.Finished;
+         tokenContract.endMinting();
+    }
 
     /**
      * @dev Start the second phase of token allocation. Can only be called by the crowdsale manager.
@@ -340,5 +346,10 @@ contract TokenAllocation is GenericCrowdsale {
     modifier onlyBackend() {
         require( msg.sender == icoBackend );
         _;
+    }
+
+    // Do not allow to send money directly to this contract
+    function() payable {
+         revert();
     }
 }

@@ -14,6 +14,7 @@ contract VestingWallet is SafeMath {
     ERC20 public tokenContract;
 
     // Two-year vesting with 1 month cliff. Roughly.
+    bool public vestingStated = false;
     uint constant cliffPeriod = 30 days;
     uint constant totalPeriods = 24;
 
@@ -37,6 +38,7 @@ contract VestingWallet is SafeMath {
     // ====================
     //
     function releaseBatch() external onlyFounders {
+        require( true==vestingStarted );
         require( now > nextPeriod );
         require( periodsPassed < totalPeriods );
 
@@ -59,11 +61,14 @@ contract VestingWallet is SafeMath {
         TokensReleased(tokensToRelease, tokensRemaining, nextPeriod);
     }
 
-    ////// [low] This can be called again
     function launchVesting() onlyCrowdsale {
+        require( false==vestingStarted );
+
         tokensRemaining = tokenContract.balanceOf(this);
         nextPeriod      = now + cliffPeriod;
         tokensPerBatch  = tokensRemaining / totalPeriods;
+
+        vestingStarted = true;
     }
 
     // INTERNAL FUNCTIONS
