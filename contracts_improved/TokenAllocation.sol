@@ -92,6 +92,7 @@ contract TokenAllocation is GenericCrowdsale {
      * @param _beneficiary Receiver of the tokens.
      * @param _contribution Size of the contribution (in USD cents).
      */ 
+    // TODO: refactor and use/call issueTokensWithCustomBonus method
     function issueTokens(address _beneficiary, uint _contribution) external onlyBackend onlyValidPhase onlyUnpaused {
         require( (totalCentsGathered + _contribution) <= hardCap );
 
@@ -146,15 +147,6 @@ contract TokenAllocation is GenericCrowdsale {
 
         uint remainingContribution = _contribution;
 
-        totalCentsGathered = safeAdd( totalCentsGathered, _contribution );
-
-        // 0 - mint bonus first
-        uint bonus = (_contribution * _bonus) / 100;
-        mintBonus(_beneficiary, bonus, centsLeftInPhase, contributionPart);
-        totalTokenSupply = safeAdd(totalTokenSupply, bonus);
-        updateTokensDuringPhase(bonus);
-        BonusIssued(_beneficiary, bonus);          // even if bonus is ZERO
-
         // Check if the contribution fills the current bonus phase. If so, break it up in parts,
         // mint tokens for each part separately, assign bonuses, trigger events. For transparency.
         do {
@@ -170,8 +162,16 @@ contract TokenAllocation is GenericCrowdsale {
             TokensAllocated(_beneficiary, contributionPart, tokensToMint);
 
             // 4 - continue?
-            remainingContribution = safeSub(remainingContribution,contributionPart);
+            remainingContribution = safeSub(remainingContribution, contributionPart);
+            totalCentsGathered = safeAdd(totalCentsGathered, contributionPart);
         } while (remainingContribution > 0);
+
+        // 5 - mint bonus
+        uint bonus = (_contribution * _bonus) / 100;
+        mintBonus(_beneficiary, bonus, centsLeftInPhase, contributionPart);
+        totalTokenSupply = safeAdd(totalTokenSupply, bonus);
+        updateTokensDuringPhase(bonus);
+        BonusIssued(_beneficiary, bonus);          // even if bonus is ZERO
     }
 
     // ====================
